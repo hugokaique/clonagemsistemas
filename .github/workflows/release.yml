@@ -86,7 +86,26 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: npm run tauri build -- --target universal-apple-darwin --bundles ${{ matrix.bundles }}
 
-      - name: Upload artefatos
+      # Publica direto no GitHub Release (tags) — sem passar por artifact
+      # storage (evita a cota de 500 MB do plano gratuito; cada job da matrix
+      # anexa seus próprios arquivos ao mesmo release).
+      - name: Publicar no GitHub Release (tags)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/release/bundle/msi/*.msi
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          generate_release_notes: true
+
+      # Upload de artifacts apenas em execuções manuais (workflow_dispatch),
+      # para inspeção sem criar release.
+      - name: Upload artefatos (somente dispatch manual)
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: cloneforge-${{ runner.os }}
@@ -99,27 +118,3 @@ jobs:
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
             src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: error
-
-  # ── Publica tudo num GitHub Release quando o trigger é uma tag ───────────
-  release:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Baixar artefatos
-        uses: actions/download-artifact@v4
-        with:
-          pattern: cloneforge-*
-          merge-multiple: true
-
-      - name: Publicar release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            **/*.msi
-            **/*.exe
-            **/*.deb
-            **/*.rpm
-            **/*.AppImage
-            **/*.dmg
-          generate_release_notes: true
