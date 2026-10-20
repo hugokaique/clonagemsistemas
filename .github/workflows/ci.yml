@@ -1,0 +1,81 @@
+name: CI
+
+# Verificações rápidas em todo push/PR: frontend compila, backend checa,
+# clippy sem warnings e testes headless do motor (file→file, sem root).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ runner.os }}-ci-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-ci-cargo-
+
+      - name: Frontend (tsc + vite)
+        run: |
+          npm ci
+          npm run build
+
+      - name: Backend (cargo check, workspace inteiro)
+        working-directory: src-tauri
+        run: cargo check --workspace
+
+      - name: Clippy (zero warnings)
+        working-directory: src-tauri
+        run: cargo clippy --workspace -- -D warnings
+
+      # Teste funcional do motor sem hardware: clone file→file + restore de
+      # imagem .cfimg, verificando hashes BLAKE3 (o helper não tem manifesto
+      # UAC, então roda não-elevado no runner).
+      - name: Teste E2E headless do motor
+        working-directory: src-tauri
+        shell: pwsh
+        run: |
+          cargo build -p cloneforge-helper
+          New-Item -ItemType Directory -Force ..\testdata | Out-Null
+          python -c "
+          import os
+          with open('../testdata/ci_src.bin','wb') as f:
+              f.write(os.urandom(16*1024*1024))
+              f.write(b'\x00' * (8*1024*1024))
+          print('massa criada:', os.path.getsize('../testdata/ci_src.bin'))
+          "
+          $size = (Get-Item ..\testdata\ci_src.bin).Length
+          $clone = '{"job":"clone","request":{"source":"testdata/ci_src.bin","target":"testdata/ci_dst.bin","sourceSize":' + $size + ',"blockSize":null,"verify":true}}'
+          Set-Location ..
+          $clone | src-tauri\target\debug\cloneforge-helper.exe run | Select-Object -Last 1
+          $img = '{"job":"create_image","request":{"source":"testdata/ci_src.bin","sourceSize":' + $size + ',"output":"testdata/ci.cfimg","level":3,"smart":false,"fs":null,"live":null}}'
+          $img | src-tauri\target\debug\cloneforge-helper.exe run | Select-Object -Last 1
+          $rst = '{"job":"restore","request":{"image":"testdata/ci.cfimg","target":"testdata/ci_restored.bin","verify":true}}'
+          $rst | src-tauri\target\debug\cloneforge-helper.exe run | Select-Object -Last 1
+          python -c "
+          a = open('testdata/ci_src.bin','rb').read()
+          assert a == open('testdata/ci_dst.bin','rb').read(), 'clone divergente'
+          assert a == open('testdata/ci_restored.bin','rb').read(), 'restore divergente'
+          print('E2E OK: clone e restore bit-identicos')
+          "

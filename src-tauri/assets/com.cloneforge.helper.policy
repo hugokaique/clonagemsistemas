@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD polkit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!--
+  Policy Polkit do CloneForge (Linux).
+  Instalar em: /usr/share/polkit-1/actions/com.cloneforge.helper.policy
+  O binário /usr/bin/cloneforge-helper é executado via:
+    pkexec /usr/bin/cloneforge-helper run
+  auth_admin_keep: pede senha de admin uma vez e mantém por alguns minutos.
+-->
+<policyconfig>
+  <vendor>CloneForge</vendor>
+  <vendor_url>https://cloneforge.local</vendor_url>
+
+  <action id="com.cloneforge.helper.run">
+    <description>Executar o motor de clonagem do CloneForge</description>
+    <description xml:lang="pt_BR">Executar o motor de clonagem do CloneForge</description>
+    <message>Privilégio de administrador é necessário para ler/gravar dispositivos de bloco.</message>
+    <message xml:lang="pt_BR">Privilégio de administrador é necessário para ler/gravar dispositivos de bloco.</message>
+    <defaults>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/bin/cloneforge-helper</annotate>
+    <annotate key="org.freedesktop.policykit.exec.allow_gui">false</annotate>
+  </action>
+</policyconfig>

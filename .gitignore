@@ -1,0 +1,15 @@
+# Node / frontend
+node_modules/
+dist/
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# Massa de testes sintética (regenerável)
+testdata/
+
+# SO
+Thumbs.db
+.DS_Store
+*.log

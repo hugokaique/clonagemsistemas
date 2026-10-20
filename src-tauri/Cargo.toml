@@ -1,0 +1,61 @@
+[package]
+name = "cloneforge"
+version = "0.1.0"
+description = "Clonagem, backup e deploy de sistemas operacionais"
+edition = "2021"
+rust-version = "1.77.2"
+default-run = "cloneforge"
+
+[workspace]
+members = ["helper"]
+
+[[bin]]
+name = "cloneforge"
+path = "src/main.rs"
+
+[lib]
+name = "cloneforge_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+blake3 = "1"
+zstd = "0.13"
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# macOS: parsing do `diskutil list -plist`
+[target.'cfg(target_os = "macos")'.dependencies]
+plist = "1"
+
+# Linux: elevação via pkexec (geteuid)
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+# Windows: Win32 raw — DeviceIoControl (FSCTL_GET_VOLUME_BITMAP), CreateFileW
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_Security",
+] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+strip = true

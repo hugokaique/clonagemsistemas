@@ -1,0 +1,16 @@
+[package]
+name = "cloneforge-helper"
+version = "0.1.0"
+edition = "2021"
+description = "Motor privilegiado do CloneForge (Linux/pkexec) — protocolo JSON-lines"
+
+# SEM build.rs: propositalmente NÃO recebe o manifesto UAC do pacote principal.
+# No Linux o helper é elevado via pkexec; embutir requireAdministrator aqui
+# faria o Windows abrir prompt UAC ao executá-lo, quebrando testes headless.
+
+[dependencies]
+cloneforge = { path = ".." }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
