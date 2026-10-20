@@ -74,16 +74,11 @@ jobs:
 
       - name: Build (macOS Universal Binary)
         if: runner.os == 'macOS'
-        env:
-          # Preencha os secrets no repositório para assinar + notarizar:
-          # APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
-          # APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        # Sem certificado Developer ID: build ad-hoc (não definir APPLE_*,
+        # senão o Tauri tenta importar um certificado vazio e falha o codesign).
+        # Para assinar + notarizar no futuro, cadastre os secrets e reabra o env:
+        #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
+        #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
         run: npm run tauri build -- --target universal-apple-darwin --bundles ${{ matrix.bundles }}
 
       # Publica direto no GitHub Release (tags) — sem passar por artifact
