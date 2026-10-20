@@ -112,11 +112,11 @@ pub mod platform {
                 let clusters = i64::from_le_bytes(out[8..16].try_into().unwrap()) as u64;
                 match res {
                     Ok(()) => {
-                        let nbytes = ((clusters + 7) / 8) as usize;
+                        let nbytes = (clusters as usize).div_ceil(8);
                         break (clusters, out[VBB_HEADER..VBB_HEADER + nbytes].to_vec());
                     }
                     Err(e) if e.code() == ERROR_MORE_DATA.to_hresult() => {
-                        let need = VBB_HEADER + ((clusters + 7) / 8) as usize + 4096;
+                        let need = VBB_HEADER + (clusters as usize).div_ceil(8) + 4096;
                         cap = if need > cap { need } else { cap.saturating_mul(2) };
                         continue;
                     }
