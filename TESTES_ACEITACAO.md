@@ -31,11 +31,11 @@ echo '{"job":"clone","request":{"source":"testdata/fonte_64mb.bin","target":"tes
 
 | # | Teste | Esperado | Status |
 |---|-------|----------|--------|
-| 1.1 | `npm run tauri build -- --bundles msi,nsis` no Windows | Gera `CloneForge_0.1.0_x64-setup.exe` + MSIs pt-BR/en-US | ☐ |
+| 1.1 | `npm run tauri build -- --bundles msi,nsis` no Windows | Gera `CloneForge_0.1.0_x64-setup.exe` + MSIs pt-BR/en-US | ☑ CI run `39499079111` + download validado (SHA-256, magic PE/OLE2) |
 | 1.2 | Instalar NSIS como usuário padrão | Instalador pede UAC; app instalado em `C:\Program Files\CloneForge` | ☐ |
 | 1.3 | Abrir o app instalado | **UAC exigido na abertura** (manifesto `requireAdministrator`) | ☐ |
-| 1.4 | `./bootstrap.sh && npm run tauri build -- --bundles deb,rpm,appimage` no Linux | 3 pacotes gerados | ☐ |
-| 1.5 | `npm run tauri build -- --target universal-apple-darwin --bundles app,dmg` no macOS | `.dmg` universal (`lipo -archs` mostra x86_64 + arm64) | ☐ |
+| 1.4 | `./bootstrap.sh && npm run tauri build -- --bundles deb,rpm,appimage` no Linux | 3 pacotes gerados | ☑ CI run `39499079111` + download validado (deb/rpm/AppImage) |
+| 1.5 | `npm run tauri build -- --target universal-apple-darwin --bundles app,dmg` no macOS | `.dmg` universal (`lipo -archs` mostra x86_64 + arm64) | ☐ `.dmg` universal publicado (CI, target universal); falta verificar `lipo -archs` num Mac |
 
 ## 2. Enumeração de discos e proteção
 

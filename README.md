@@ -156,4 +156,4 @@ Os testes com GUI e hardware real (pendrives, boot de clone) seguem o roteiro no
 
 ## Licença
 
-A definir pelo autor.
+[MIT](LICENSE) — use, modifique e distribua livremente.
