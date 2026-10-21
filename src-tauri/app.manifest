@@ -4,6 +4,14 @@
      o que corrompe caracteres UTF-8 acentuados e invalida o XML no SxS. -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity version="0.1.0.0" name="CloneForge.app" type="win32" processorArchitecture="*"/>
+  <!-- Common Controls v6: REQUIRED. Without this dependency the process loads
+       comctl32 v5, which does not export TaskDialogIndirect (used by the
+       dialog stack) and the exe fails to start with "entry point not found". -->
+  <dependency>
+    <dependentAssembly>
+      <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0" processorArchitecture="*" publicKeyToken="6595b64144ccf1df" language="*"/>
+    </dependentAssembly>
+  </dependency>
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
