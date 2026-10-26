@@ -33,7 +33,7 @@ echo '{"job":"clone","request":{"source":"testdata/fonte_64mb.bin","target":"tes
 |---|-------|----------|--------|
 | 1.1 | `npm run tauri build -- --bundles msi,nsis` no Windows | Gera `CloneForge_0.1.0_x64-setup.exe` + MSIs pt-BR/en-US | ☑ CI run `39499079111` + download validado (SHA-256, magic PE/OLE2) |
 | 1.2 | Instalar NSIS como usuário padrão | Instalador pede UAC; app instalado em `C:\Program Files\CloneForge` | ☑ 2026-10-21 — instalado via NSIS em `C:\Program Files\CloneForge` (evidência: print do erro 1.3) |
-| 1.3 | Abrir o app instalado | **UAC exigido na abertura** (manifesto `requireAdministrator`) | ✖→☐ 2026-10-21: **bug encontrado** — "ponto de entrada TaskDialogIndirect não encontrado": manifesto customizado não declarava `Microsoft.Windows.Common-Controls` v6 (comctl32 v5 não exporta a função). **Fix**: dependência v6 adicionada ao `app.manifest`; instalador NSIS reconstruído. Reteste pendente. |
+| 1.3 | Abrir o app instalado | **UAC exigido na abertura** (manifesto `requireAdministrator`) | ✖→☑ 2026-10-21: **bug encontrado** — "ponto de entrada TaskDialogIndirect não encontrado": manifesto customizado não declarava `Microsoft.Windows.Common-Controls` v6 (comctl32 v5 não exporta a função). **Fix**: dependência v6 adicionada ao `app.manifest` (`5a2947b`). Reteste 2026-10-26: **aprovado** — app abre com UAC, sem erro. |
 | 1.4 | `./bootstrap.sh && npm run tauri build -- --bundles deb,rpm,appimage` no Linux | 3 pacotes gerados | ☑ CI run `39499079111` + download validado (deb/rpm/AppImage) |
 | 1.5 | `npm run tauri build -- --target universal-apple-darwin --bundles app,dmg` no macOS | `.dmg` universal (`lipo -archs` mostra x86_64 + arm64) | ☐ `.dmg` universal publicado (CI, target universal); falta verificar `lipo -archs` num Mac |
 
@@ -41,9 +41,9 @@ echo '{"job":"clone","request":{"source":"testdata/fonte_64mb.bin","target":"tes
 
 | # | Teste | Esperado | Status |
 |---|-------|----------|--------|
-| 2.1 | Abrir a aba ① | Todos os discos físicos listados com modelo, tamanho, barramento e partições | ✖→☐ 2026-10-26: **bug crítico** — `@(,$disks)` no `ConvertTo-Json -InputObject` gerava JSON em array duplo; o parser fabricava 1 disco fantasma "Desconhecido/0 B" com `is_system=false` (furiava a proteção) e escondia os discos reais, incluindo pendrive USB. **Fix**: JSON plano + parse fail-closed (`0b9e375`). Janela de PowerShell visível também corrigida (CREATE_NO_WINDOW). Reteste pendente. |
-| 2.2 | Disco do sistema (C:) | Badge vermelho "DISCO DO SISTEMA" e **desabilitado como destino** | ☐ |
-| 2.3 | Pendrive USB | Badge "removível", elegível como origem e destino | ☐ |
+| 2.1 | Abrir a aba ① | Todos os discos físicos listados com modelo, tamanho, barramento e partições | ✖→☑ 2026-10-26: **bug crítico** — `@(,$disks)` no `ConvertTo-Json -InputObject` gerava JSON em array duplo; o parser fabricava 1 disco fantasma "Desconhecido/0 B" com `is_system=false` (furiava a proteção) e escondia os discos reais, incluindo pendrive USB. **Fix**: JSON plano + parse fail-closed + CREATE_NO_WINDOW (`0b9e375`). Reteste 2026-10-26 com instalador v2: **aprovado** — 3 discos listados (2× NVMe + SanDisk Cruzer Fit 15,4 GB USB). |
+| 2.2 | Disco do sistema (C:) | Badge vermelho "DISCO DO SISTEMA" e **desabilitado como destino** | ☑ 2026-10-26 — KINGSTON SNV2S1000G (PhysicalDrive0) marcado como disco do sistema no reteste do 2.1 |
+| 2.3 | Pendrive USB | Badge "removível", elegível como origem e destino | ☑ 2026-10-26 — SanDisk Cruzer Fit (PhysicalDrive2, USB) listado como removível no reteste do 2.1 |
 | 2.4 | "↻ Reescanear" com pendrive recém-inserido | Aparece sem reiniciar o app | ☐ |
 | 2.5 | Forçar destino = disco do sistema via IPC direto | Backend recusa: "BLOQUEADO: o destino é o disco do sistema" | ☐ |
 
