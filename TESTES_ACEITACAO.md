@@ -41,7 +41,7 @@ echo '{"job":"clone","request":{"source":"testdata/fonte_64mb.bin","target":"tes
 
 | # | Teste | Esperado | Status |
 |---|-------|----------|--------|
-| 2.1 | Abrir a aba ① | Todos os discos físicos listados com modelo, tamanho, barramento e partições | ☐ |
+| 2.1 | Abrir a aba ① | Todos os discos físicos listados com modelo, tamanho, barramento e partições | ✖→☐ 2026-10-26: **bug crítico** — `@(,$disks)` no `ConvertTo-Json -InputObject` gerava JSON em array duplo; o parser fabricava 1 disco fantasma "Desconhecido/0 B" com `is_system=false` (furiava a proteção) e escondia os discos reais, incluindo pendrive USB. **Fix**: JSON plano + parse fail-closed (`0b9e375`). Janela de PowerShell visível também corrigida (CREATE_NO_WINDOW). Reteste pendente. |
 | 2.2 | Disco do sistema (C:) | Badge vermelho "DISCO DO SISTEMA" e **desabilitado como destino** | ☐ |
 | 2.3 | Pendrive USB | Badge "removível", elegível como origem e destino | ☐ |
 | 2.4 | "↻ Reescanear" com pendrive recém-inserido | Aparece sem reiniciar o app | ☐ |
