@@ -35,8 +35,13 @@ pub struct DiskInfo {
 }
 
 async fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
-    let out = tokio::process::Command::new(cmd)
-        .args(args)
+    let mut command = tokio::process::Command::new(cmd);
+    command.args(args);
+    // Sem CREATE_NO_WINDOW o powershell abre uma janela de console visível
+    // junto com a GUI do app.
+    #[cfg(target_os = "windows")]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    let out = command
         .output()
         .await
         .map_err(|e| format!("falha ao executar `{cmd}`: {e}"))?;
@@ -80,7 +85,7 @@ $disks = @(Get-Disk | ForEach-Object {
     })
   }
 })
-ConvertTo-Json -Depth 6 -Compress -InputObject @(,$disks)
+ConvertTo-Json -Depth 6 -Compress -InputObject $disks
 "#;
     let json = run("powershell", &["-NoProfile", "-NonInteractive", "-Command", ps]).await?;
     let v: serde_json::Value = serde_json::from_str(json.trim()).map_err(|e| e.to_string())?;
@@ -91,7 +96,15 @@ ConvertTo-Json -Depth 6 -Compress -InputObject @(,$disks)
 
     let mut disks = Vec::new();
     for d in arr {
-        let number = d["Number"].as_u64().unwrap_or(0);
+        // FAIL-CLOSED: entrada malformada NUNCA vira disco. Um parse quebrado
+        // que fabricasse PhysicalDrive0 com is_system=false abriria caminho
+        // para sobrescrever o disco do sistema — preferimos erro a risco.
+        if !d.is_object() {
+            return Err(format!("resposta inesperada do Get-Disk (formato): {d}"));
+        }
+        let number = d["Number"]
+            .as_u64()
+            .ok_or_else(|| format!("Get-Disk sem Number válido: {d}"))?;
         let partitions = d["Partitions"]
             .as_array()
             .cloned()

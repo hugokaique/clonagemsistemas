@@ -18,8 +18,10 @@ pub struct ShadowCopy {
 }
 
 fn run_ps(script: &str) -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
     let out = std::process::Command::new("powershell")
         .args(["-NoProfile", "-NonInteractive", "-Command", script])
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW — não abrir console
         .output()
         .map_err(|e| format!("falha ao iniciar powershell: {e}"))?;
     if !out.status.success() {
