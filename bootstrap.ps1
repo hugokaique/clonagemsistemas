@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   CloneForge — Bootstrap do ambiente de desenvolvimento (Windows).
 
@@ -23,7 +23,7 @@ function Assert-Cmd([string]$Name, [string]$Hint) {
 }
 
 Write-Host "`n=== 1/4 Toolchain ===" -ForegroundColor Cyan
-Assert-Cmd node   "Instale o Node.js LTS (>= 18): https://nodejs.org"
+Assert-Cmd node   "Instale o Node.js 22+: https://nodejs.org"
 Assert-Cmd npm    "O npm acompanha o Node.js."
 Assert-Cmd cargo  "Instale o Rust via rustup: https://rustup.rs"
 Assert-Cmd rustup "Instale o Rust via rustup: https://rustup.rs"
@@ -49,6 +49,8 @@ Write-Host "`n=== 4/4 Pronto ===" -ForegroundColor Cyan
 Write-Host @"
 
   Desenvolvimento : npm run tauri dev        (execute como Administrador p/ acesso raw)
+  Só a interface  : npm run dev              (navegador, backend simulado)
+  Testes do motor : cd src-tauri; cargo test --workspace
   Build Windows   : npm run tauri build -- --bundles msi,nsis
   Saída           : src-tauri\target\release\bundle\
 
