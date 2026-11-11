@@ -12,15 +12,18 @@
 //!   entende APFS (incl. volumes selados); restore via `asr` (Apple Software
 //!   Restore), o caminho suportado pela Apple inclusive no Apple Silicon.
 
+#[cfg(windows)]
 use serde::Serialize;
 
 /// Intervalo de clusters alocados: [start_cluster, start_cluster + clusters)
+#[cfg(windows)]
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct AllocRun {
     pub start_cluster: u64,
     pub clusters: u64,
 }
 
+#[cfg(windows)]
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AllocMap {
@@ -228,57 +231,200 @@ pub mod platform {
     }
 }
 
-// ─────────────────────────────── Linux ─────────────────────────────────
-#[cfg(target_os = "linux")]
-pub mod platform {
-    use std::io::Read;
+// ───────────────────── Processos-filho como stream ─────────────────────
 
-    /// Stream do `partclone.<fs>` clonando a partição para stdout.
-    /// O formato partclone já é sparse-aware por filesystem.
-    /// Requer root (via pkexec) e o pacote `partclone` instalado.
-    pub struct PartcloneReader {
-        child: std::process::Child,
-        stdout: std::process::ChildStdout,
+/// Binário do partclone para um filesystem reportado pelo `lsblk`.
+///
+/// Lista fechada de propósito: o valor chega do cliente e vira o nome de um
+/// programa executado como root pelo helper.
+#[cfg(any(target_os = "linux", test))]
+pub fn partclone_tool(fs: &str) -> Result<String, String> {
+    const SUPPORTED: &[&str] = &[
+        "ext2", "ext3", "ext4", "xfs", "btrfs", "ntfs", "vfat", "fat12", "fat16", "fat32",
+        "exfat", "f2fs", "hfsplus", "reiserfs", "jfs", "nilfs2", "minix",
+    ];
+    let fs = fs.trim().to_lowercase();
+    if SUPPORTED.contains(&fs.as_str()) {
+        Ok(format!("partclone.{fs}"))
+    } else {
+        Err(format!(
+            "filesystem `{fs}` não é suportado pelo smart copy — use a cópia raw"
+        ))
+    }
+}
+
+/// Programas externos usados como origem (stdout) ou destino (stdin) de um
+/// stream. Independente de plataforma para poder ser testado fora do Linux.
+#[cfg(any(target_os = "linux", all(test, unix)))]
+pub mod pipe {
+    use std::io::{Read, Write};
+    use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+    use std::thread::JoinHandle;
+
+    const TAIL_BYTES: usize = 2048;
+
+    /// Drena o stderr do filho numa thread, guardando só o final. Sem isso o
+    /// pipe enche (o partclone escreve progresso continuamente) e o filho trava.
+    fn drain_tail(mut stderr: impl Read + Send + 'static) -> JoinHandle<String> {
+        std::thread::spawn(move || {
+            let mut tail: Vec<u8> = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                match stderr.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        tail.extend_from_slice(&buf[..n]);
+                        if tail.len() > TAIL_BYTES {
+                            let cut = tail.len() - TAIL_BYTES;
+                            tail.drain(..cut);
+                        }
+                    }
+                }
+            }
+            // O progresso do partclone usa `\r`; fica só com as últimas linhas.
+            let text = String::from_utf8_lossy(&tail).replace('\r', "\n");
+            let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+            lines[lines.len().saturating_sub(3)..].join(" | ")
+        })
     }
 
-    pub fn partclone_spawn(source_part: &str, fs: &str) -> Result<PartcloneReader, String> {
-        let tool = format!("partclone.{}", fs.to_lowercase());
-        let mut child = std::process::Command::new(&tool)
-            .args(["-c", "-s", source_part, "-o", "-"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
+    struct Proc {
+        name: String,
+        child: Child,
+        tail: Option<JoinHandle<String>>,
+    }
+
+    impl Proc {
+        /// Espera o filho terminar; saída ≠ 0 vira erro com o final do stderr.
+        fn wait_ok(&mut self) -> Result<(), String> {
+            let st = self
+                .child
+                .wait()
+                .map_err(|e| format!("aguardar `{}`: {e}", self.name))?;
+            let tail = self
+                .tail
+                .take()
+                .and_then(|h| h.join().ok())
+                .unwrap_or_default();
+            if st.success() {
+                Ok(())
+            } else if tail.is_empty() {
+                Err(format!("`{}` saiu com {st}", self.name))
+            } else {
+                Err(format!("`{}` saiu com {st}: {tail}", self.name))
+            }
+        }
+    }
+
+    impl Drop for Proc {
+        fn drop(&mut self) {
+            // Sem efeito se o filho já terminou; evita órfão em caso de erro.
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
+    fn spawn(program: &str, args: &[&str], stdin: Stdio, stdout: Stdio) -> Result<Proc, String> {
+        let mut child = Command::new(program)
+            .args(args)
+            .stdin(stdin)
+            .stdout(stdout)
+            .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("falha ao iniciar `{tool}`: {e} (partclone instalado? root?)"))?;
-        let stdout = child
+            .map_err(|e| format!("falha ao iniciar `{program}`: {e}"))?;
+        let tail = child.stderr.take().map(drain_tail);
+        Ok(Proc { name: program.to_string(), child, tail })
+    }
+
+    /// Filho cujo stdout é lido como stream. O EOF só é entregue como sucesso
+    /// se o filho saiu com código 0.
+    pub struct ChildSource {
+        proc_: Proc,
+        stdout: ChildStdout,
+        finished: bool,
+    }
+
+    pub fn spawn_source(program: &str, args: &[&str]) -> Result<ChildSource, String> {
+        let mut proc_ = spawn(program, args, Stdio::null(), Stdio::piped())?;
+        let stdout = proc_
+            .child
             .stdout
             .take()
-            .ok_or_else(|| "stdout do partclone indisponível".to_string())?;
-        Ok(PartcloneReader { child, stdout })
+            .ok_or_else(|| format!("stdout de `{program}` indisponível"))?;
+        Ok(ChildSource { proc_, stdout, finished: false })
     }
 
-    impl Read for PartcloneReader {
+    impl Read for ChildSource {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
             let n = self.stdout.read(buf)?;
-            if n == 0 {
-                match self.child.wait() {
-                    Ok(st) if st.success() => {}
-                    Ok(st) => {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("partclone saiu com {st}"),
-                        ))
-                    }
-                    Err(e) => return Err(e),
-                }
+            if n == 0 && !self.finished {
+                self.finished = true;
+                self.proc_.wait_ok().map_err(std::io::Error::other)?;
             }
             Ok(n)
         }
     }
 
-    impl Drop for PartcloneReader {
-        fn drop(&mut self) {
-            let _ = self.child.kill();
+    /// Filho que recebe o stream pelo stdin.
+    pub struct ChildSink {
+        proc_: Proc,
+        stdin: Option<ChildStdin>,
+    }
+
+    pub fn spawn_sink(program: &str, args: &[&str]) -> Result<ChildSink, String> {
+        let mut proc_ = spawn(program, args, Stdio::piped(), Stdio::null())?;
+        let stdin = proc_
+            .child
+            .stdin
+            .take()
+            .ok_or_else(|| format!("stdin de `{program}` indisponível"))?;
+        Ok(ChildSink { proc_, stdin: Some(stdin) })
+    }
+
+    impl ChildSink {
+        pub fn write_all(&mut self, buf: &[u8]) -> Result<(), String> {
+            let Some(stdin) = self.stdin.as_mut() else {
+                return Err(format!("stdin de `{}` já fechado", self.proc_.name));
+            };
+            if let Err(e) = stdin.write_all(buf) {
+                // Quase sempre EPIPE: o filho morreu, e o motivo está no stderr dele.
+                self.stdin = None;
+                return Err(match self.proc_.wait_ok() {
+                    Err(why) => why,
+                    Ok(()) => format!("escrever em `{}`: {e}", self.proc_.name),
+                });
+            }
+            Ok(())
         }
+
+        /// Fecha o stdin (EOF) e exige que o filho termine com sucesso.
+        pub fn finish(mut self) -> Result<(), String> {
+            self.stdin = None;
+            self.proc_.wait_ok()
+        }
+    }
+}
+
+// ─────────────────────────────── Linux ─────────────────────────────────
+#[cfg(target_os = "linux")]
+pub mod platform {
+    use super::pipe::{spawn_sink, spawn_source, ChildSink, ChildSource};
+
+    /// Stream do `partclone.<fs>` clonando a partição para stdout.
+    /// O formato partclone já é sparse-aware por filesystem.
+    /// Requer root (via pkexec) e o pacote `partclone` instalado.
+    pub fn partclone_spawn(source_part: &str, fs: &str) -> Result<ChildSource, String> {
+        let tool = super::partclone_tool(fs)?;
+        spawn_source(&tool, &["-c", "-s", source_part, "-o", "-"])
+            .map_err(|e| format!("{e} (partclone instalado? root?)"))
+    }
+
+    /// `partclone.restore` lendo o stream partclone do stdin e recriando o
+    /// filesystem em `target_dev`. É o único caminho válido para imagens de
+    /// modo 2: o stream NÃO é uma cópia byte a byte da partição.
+    pub fn partclone_restore_spawn(target_dev: &str) -> Result<ChildSink, String> {
+        spawn_sink("partclone.restore", &["-s", "-", "-o", target_dev])
+            .map_err(|e| format!("{e} (partclone instalado? root?)"))
     }
 }
 
@@ -301,6 +447,9 @@ pub mod platform {
 
     /// Restaura uma imagem .dmg em um disco via asr — o único caminho que
     /// recria corretamente containers APFS e volumes selados (Apple Silicon).
+    ///
+    /// Ainda NÃO está ligada ao restore da interface (teste de aceitação 6.3).
+    #[allow(dead_code)]
     pub fn restore_dmg(image: &str, target_dev: &str) -> Result<(), String> {
         let st = std::process::Command::new("asr")
             .args(["restore", "--source", image, "--target", target_dev, "--erase", "--noprompt"])
@@ -319,5 +468,57 @@ pub mod platform {
         let mut h = blake3::Hasher::new();
         std::io::copy(&mut f, &mut h).map_err(|e| e.to_string())?;
         Ok(h.finalize().to_hex().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partclone_so_aceita_filesystems_da_lista() {
+        assert_eq!(partclone_tool("ext4").unwrap(), "partclone.ext4");
+        assert_eq!(partclone_tool(" VFAT ").unwrap(), "partclone.vfat");
+        for ruim in ["", "../../tmp/x", "ext4 -o /dev/sda", "crypto_LUKS", "LVM2_member", "swap", "restore"] {
+            assert!(partclone_tool(ruim).is_err(), "aceitou `{ruim}`");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn origem_filho_entrega_o_stdout_e_falha_se_o_filho_falhar() {
+        use std::io::Read;
+
+        let mut ok = pipe::spawn_source("sh", &["-c", "printf abc"]).unwrap();
+        let mut lido = String::new();
+        ok.read_to_string(&mut lido).unwrap();
+        assert_eq!(lido, "abc");
+
+        let mut ruim =
+            pipe::spawn_source("sh", &["-c", "printf abc; echo disco quebrado >&2; exit 3"]).unwrap();
+        let err = ruim.read_to_string(&mut String::new()).unwrap_err().to_string();
+        assert!(err.contains("disco quebrado"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stderr_volumoso_nao_trava_o_filho() {
+        use std::io::Read;
+
+        // 1 MiB no stderr: bem acima do buffer do pipe (64 KiB).
+        let script = "i=0; while [ $i -lt 16384 ]; do echo 0123456789012345678901234567890123456789012345678901234567890 >&2; i=$((i+1)); done; printf fim";
+        let mut src = pipe::spawn_source("sh", &["-c", script]).unwrap();
+        let mut lido = String::new();
+        src.read_to_string(&mut lido).unwrap();
+        assert_eq!(lido, "fim");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn destino_filho_que_falha_devolve_o_stderr() {
+        let mut sink = pipe::spawn_sink("sh", &["-c", "cat >/dev/null; echo sem espaco >&2; exit 5"]).unwrap();
+        sink.write_all(b"dados").unwrap();
+        let err = sink.finish().unwrap_err();
+        assert!(err.contains("sem espaco"), "{err}");
     }
 }

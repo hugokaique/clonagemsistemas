@@ -3,14 +3,19 @@
 //! Protocolo JSON-lines (ver privilege.rs):
 //!   stdin  ← {"job": "clone"|"create_image"|"restore", "request": {...}}
 //!   stdout → {"type":"progress","payload":{...}} | {"type":"result",...}
+//!   stdin  ← {"cancel": true}   (opcional, a qualquer momento)
+//!
+//! Código de saída: 0 se o job concluiu, 1 se falhou ou foi cancelado.
 //!
 //! A GUI nunca roda como root: só este binário mínimo recebe privilégio,
 //! reduzindo a superfície exposta a dispositivos de bloco.
+//!
+//! O job recebido NÃO é confiável (qualquer processo do usuário pode chamar
+//! `pkexec cloneforge-helper run`); as regras estão em `cloneforge_lib::elevated`.
 
 use std::io::BufRead;
 
-use cloneforge_lib::clone::{run_clone, CloneProgress, CloneRequest};
-use cloneforge_lib::image::{run_create, run_restore, ImageRequest, RestoreRequest};
+use cloneforge_lib::clone::CloneProgress;
 
 fn emit_line(v: &serde_json::Value) {
     use std::io::Write;
@@ -36,39 +41,23 @@ async fn main() -> anyhow::Result<()> {
         .next()
         .ok_or_else(|| anyhow::anyhow!("stdin vazio — esperado um job JSON"))??;
     let job: serde_json::Value = serde_json::from_str(&line)?;
-    let kind = job["job"].as_str().unwrap_or_default().to_string();
-    let request = job["request"].clone();
 
-    let result: Result<serde_json::Value, String> = match kind.as_str() {
-        "clone" => match serde_json::from_value::<CloneRequest>(request) {
-            Ok(req) => run_clone(&req, emit_progress)
-                .await
-                .map(|hash| serde_json::json!({"hash": hash})),
-            Err(e) => Err(format!("job clone inválido: {e}")),
-        },
-        "create_image" => match serde_json::from_value::<ImageRequest>(request) {
-            Ok(req) => match tokio::task::spawn_blocking(move || run_create(&req, emit_progress)).await {
-                Ok(r) => r.map(|(logical, hash, image_size, format)| {
-                    serde_json::json!({
-                        "hash": hash,
-                        "logical": logical,
-                        "image_size": image_size,
-                        "format": format,
-                    })
-                }),
-                Err(e) => Err(format!("task: {e}")),
-            },
-            Err(e) => Err(format!("job create_image inválido: {e}")),
-        },
-        "restore" => match serde_json::from_value::<RestoreRequest>(request) {
-            Ok(req) => match tokio::task::spawn_blocking(move || run_restore(&req, emit_progress)).await {
-                Ok(r) => r.map(|(written, hash)| serde_json::json!({"hash": hash, "written": written})),
-                Err(e) => Err(format!("task: {e}")),
-            },
-            Err(e) => Err(format!("job restore inválido: {e}")),
-        },
-        other => Err(format!("job desconhecido: `{other}`")),
-    };
+    // Linhas seguintes do stdin: pedidos de cancelamento vindos da GUI. O
+    // fim do stdin (EOF) NÃO cancela — é o que acontece em `echo job | helper`.
+    std::thread::spawn(|| {
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            let cancel = serde_json::from_str::<serde_json::Value>(&line)
+                .map(|v| v["cancel"] == true)
+                .unwrap_or(false);
+            if cancel {
+                cloneforge_lib::job::global().cancel();
+            }
+        }
+    });
+
+    // Toda a validação (enumeração, trava do disco do sistema, abertura de
+    // arquivos com a identidade do usuário) acontece dentro de `run_job`.
+    let result = cloneforge_lib::elevated::run_job(&job, emit_progress).await;
 
     match result {
         Ok(mut extra) => {
@@ -78,6 +67,8 @@ async fn main() -> anyhow::Result<()> {
         }
         Err(e) => {
             emit_line(&serde_json::json!({"type": "result", "ok": false, "error": e}));
+            // Código de saída ≠ 0: quem chama por script não precisa ler o JSON.
+            std::process::exit(1);
         }
     }
     Ok(())

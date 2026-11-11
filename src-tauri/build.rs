@@ -1,4 +1,5 @@
 fn main() {
+    #[allow(unused_mut)] // só é reatribuído no Windows
     let mut attrs = tauri_build::Attributes::new();
 
     // Windows: manifesto UAC (requestedExecutionLevel = requireAdministrator) para o .exe
