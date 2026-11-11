@@ -1,18 +1,62 @@
 name: Release
 
-# Gera os 7 artefatos (MSI, NSIS, deb, rpm, AppImage, dmg, app universal)
-# a cada tag v* ou manualmente via workflow_dispatch.
+# Gera os artefatos (MSI, NSIS, deb, rpm, AppImage, dmg) a cada tag v* ou
+# manualmente via workflow_dispatch. Em tags, publica um RELEASE EM RASCUNHO
+# (draft) com checksums SHA-256 — revise e publique manualmente.
 
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
+# Padrão: somente leitura. `contents: write` é concedido apenas ao job
+# `publish`, o único que cria o release.
 permissions:
-  contents: write # necessário para publicar o GitHub Release
+  contents: read
 
 jobs:
+  # Falha cedo se a tag não bate com a versão dos manifestos (ou se os
+  # manifestos divergem entre si). Em dispatch manual (sem tag) só confere
+  # a consistência entre os manifestos.
+  verify-version:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Conferir versões
+        shell: bash
+        run: |
+          set -euo pipefail
+          toml_ver() { grep -m1 -E '^version *= *"' "$1" | sed -E 's/^version *= *"([^"]+)".*/\1/'; }
+
+          v_pkg=$(node -p "require('./package.json').version")
+          v_app=$(toml_ver src-tauri/Cargo.toml)
+          v_helper=$(toml_ver src-tauri/helper/Cargo.toml)
+          v_conf=$(node -p "require('./src-tauri/tauri.conf.json').version")
+
+          echo "package.json            = $v_pkg"
+          echo "src-tauri/Cargo.toml    = $v_app"
+          echo "helper/Cargo.toml       = $v_helper"
+          echo "tauri.conf.json         = $v_conf"
+
+          for v in "$v_app" "$v_helper" "$v_conf"; do
+            if [ "$v" != "$v_pkg" ]; then
+              echo "::error::versões divergentes entre os manifestos"
+              exit 1
+            fi
+          done
+
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tag="${GITHUB_REF_NAME#v}"
+            echo "tag                     = $tag"
+            if [ "$tag" != "$v_pkg" ]; then
+              echo "::error::a tag ${GITHUB_REF_NAME} não corresponde à versão $v_pkg dos manifestos"
+              exit 1
+            fi
+          fi
+
   build:
+    needs: verify-version
     strategy:
       fail-fast: false
       matrix:
@@ -48,7 +92,9 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
 
-      # ── Linux: dependências do WebKitGTK + ferramentas de disco ──────────
+      # ── Linux: dependências do WebKitGTK + ferramentas de build ──────────
+      # (util-linux/partclone são dependências de EXECUÇÃO do pacote, declaradas
+      # em tauri.conf.json; `rpm` é necessário para gerar o .rpm.)
       - name: Dependências de sistema (Linux)
         if: runner.os == 'Linux'
         run: |
@@ -57,7 +103,7 @@ jobs:
             libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev \
             libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
             build-essential curl wget file pkg-config libssl-dev \
-            util-linux partclone rpm
+            util-linux rpm
 
       # ── macOS: targets para Universal Binary (Intel + Apple Silicon) ─────
       - name: Targets Rust (macOS universal)
@@ -66,6 +112,20 @@ jobs:
 
       - name: Dependências do frontend
         run: npm ci
+
+      # ── Linux: o helper privilegiado precisa existir ANTES do bundle ─────
+      # tauri.conf.json (bundle.linux.deb/rpm.files) instala
+      # src-tauri/target/release/cloneforge-helper em /usr/bin. Sem --target,
+      # o `tauri build` também usa src-tauri/target/release (target dir do
+      # workspace), e o `npm run build` antes garante ../dist para o
+      # tauri::generate_context!.
+      - name: Build do helper (Linux, release)
+        if: runner.os == 'Linux'
+        run: |
+          npm run build
+          cd src-tauri
+          cargo build --release --locked -p cloneforge-helper
+          test -x target/release/cloneforge-helper
 
       # ── Build ────────────────────────────────────────────────────────────
       - name: Build (Windows / Linux)
@@ -81,29 +141,27 @@ jobs:
         #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
         run: npm run tauri build -- --target universal-apple-darwin --bundles ${{ matrix.bundles }}
 
-      # Publica direto no GitHub Release (tags) — sem passar por artifact
-      # storage (evita a cota de 500 MB do plano gratuito; cada job da matrix
-      # anexa seus próprios arquivos ao mesmo release).
-      - name: Publicar no GitHub Release (tags)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/deb/*.deb
-            src-tauri/target/release/bundle/rpm/*.rpm
-            src-tauri/target/release/bundle/appimage/*.AppImage
-            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-          generate_release_notes: true
+      # Confere que deb/rpm realmente levam o helper e a policy do Polkit.
+      - name: Conferir conteúdo dos pacotes Linux
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          deb=$(ls src-tauri/target/release/bundle/deb/*.deb)
+          rpmf=$(ls src-tauri/target/release/bundle/rpm/*.rpm)
+          dpkg-deb -c "$deb" | tee /tmp/deb.list
+          rpm -qlp "$rpmf" | tee /tmp/rpm.list
+          grep -q 'usr/bin/cloneforge-helper' /tmp/deb.list
+          grep -q 'usr/share/polkit-1/actions/com.cloneforge.helper.policy' /tmp/deb.list
+          grep -q '/usr/bin/cloneforge-helper' /tmp/rpm.list
+          grep -q '/usr/share/polkit-1/actions/com.cloneforge.helper.policy' /tmp/rpm.list
 
-      # Upload de artifacts apenas em execuções manuais (workflow_dispatch),
-      # para inspeção sem criar release.
-      - name: Upload artefatos (somente dispatch manual)
-        if: github.event_name == 'workflow_dispatch'
+      # Artifacts temporários (1 dia) só para repassar os arquivos ao job
+      # `publish`; o release em si guarda os arquivos definitivos.
+      - name: Upload artefatos
         uses: actions/upload-artifact@v4
         with:
           name: cloneforge-${{ runner.os }}
+          retention-days: ${{ startsWith(github.ref, 'refs/tags/') && 1 || 7 }}
           path: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/msi/*.msi
@@ -111,5 +169,35 @@ jobs:
             src-tauri/target/release/bundle/rpm/*.rpm
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app
           if-no-files-found: error
+
+  # Único job com permissão de escrita: junta os artefatos, gera SHA256SUMS
+  # e cria o release como RASCUNHO (só tags).
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Baixar artefatos
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cloneforge-*
+          path: artefatos
+
+      - name: Reunir arquivos e gerar SHA-256
+        run: |
+          set -euo pipefail
+          mkdir release
+          find artefatos -type f -exec mv -t release {} +
+          cd release
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Criar release em rascunho
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: release/*
+          generate_release_notes: true

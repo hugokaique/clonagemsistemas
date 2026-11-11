@@ -33,9 +33,29 @@ fn run_ps(script: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// Exatamente `X:\`. O valor é interpolado num script PowerShell executado
+/// como Administrador, então nada além disso pode passar.
+fn is_volume_root(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\'
+}
+
+/// GUID de shadow copy como o WMI devolve: `{XXXXXXXX-XXXX-...}`.
+fn is_shadow_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() || matches!(c, '-' | '{' | '}'))
+}
+
 /// Cria um shadow copy `ClientAccessible` do volume (ex: `C:\`).
 /// Requer Administrador (garantido pelo manifesto UAC do app).
 pub fn create(volume_root: &str) -> Result<ShadowCopy, String> {
+    if !is_volume_root(volume_root) {
+        return Err(format!(
+            "BLOQUEADO: `{volume_root}` não é a raiz de um volume (esperado `X:\\`)"
+        ));
+    }
     let ps = format!(
         r#"
 $ErrorActionPreference = 'Stop'
@@ -57,14 +77,21 @@ Write-Output "$($r.ShadowID)|$($s.DeviceObject)"
     let (id, dev) = line
         .split_once('|')
         .ok_or_else(|| format!("saída VSS malformada: {line}"))?;
+    let id = id.trim();
+    if !is_shadow_id(id) {
+        return Err(format!("saída VSS malformada (ID inesperado): {line}"));
+    }
     Ok(ShadowCopy {
-        id: id.trim().to_string(),
+        id: id.to_string(),
         device_object: dev.trim().to_string(),
     })
 }
 
 /// Apaga um shadow copy pelo ID (GUID com chaves, ex: `{XXXXXXXX-...}`).
 pub fn delete(id: &str) -> Result<(), String> {
+    if !is_shadow_id(id) {
+        return Err(format!("ID de shadow copy inválido: `{id}`"));
+    }
     let ps = format!(
         "Get-CimInstance Win32_ShadowCopy -Filter \"ID='{id}'\" | Remove-CimInstance"
     );

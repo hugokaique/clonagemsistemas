@@ -22,8 +22,11 @@ use std::time::Instant;
 use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// 8 MiB — otimizado para NVMe/SSD; mínimo forçado de 1 MiB
+/// 8 MiB — otimizado para NVMe/SSD
 pub const DEFAULT_BLOCK_SIZE: usize = 8 * 1024 * 1024;
+/// Limites do bloco de I/O aceito do cliente (o valor vira um `Vec` alocado).
+const MIN_BLOCK_SIZE: usize = 1024 * 1024;
+const MAX_BLOCK_SIZE: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,7 +42,7 @@ pub struct CloneRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloneProgress {
-    /// "copying" | "flushing" | "verifying" | "compressing" | "restoring" | "done" | "error"
+    /// "copying" | "flushing" | "verifying" | "compressing" | "restoring" | "done" | "error" | "cancelled"
     pub phase: String,
     pub bytes_done: u64,
     pub total_bytes: u64,
@@ -81,8 +84,47 @@ pub(crate) fn emit(app: &AppHandle, p: &CloneProgress) {
     }
 }
 
+/// Evento final de uma operação que não concluiu: `error` ou `cancelled`.
+pub(crate) fn emit_failure(app: &AppHandle, total: u64, error: &str, cancel_note: &str) {
+    let kind = crate::job::failure_kind(error);
+    let message = if kind == "cancelled" {
+        format!("{} — {cancel_note}", crate::job::CANCELLED)
+    } else {
+        error.to_string()
+    };
+    emit(
+        app,
+        &CloneProgress {
+            phase: kind.into(),
+            bytes_done: 0,
+            total_bytes: total,
+            percent: 0.0,
+            speed_mbps: 0.0,
+            eta_seconds: 0.0,
+            message: Some(message),
+        },
+    );
+}
+
+/// Pede o cancelamento da operação em andamento (clonagem, imagem ou
+/// restore). Sem operação rodando, não faz nada.
+#[tauri::command]
+pub async fn cancel_job() -> Result<(), String> {
+    if !crate::job::is_running() {
+        return Ok(());
+    }
+    crate::job::global().cancel();
+    // No Linux sem root o trabalho está no helper elevado: repassa o pedido.
+    #[cfg(target_os = "linux")]
+    crate::privilege::forward_cancel().await;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn start_clone(app: AppHandle, req: CloneRequest) -> Result<String, String> {
+    // Um job por vez: a posse acompanha a tarefa até ela terminar.
+    let job = crate::job::begin()?;
+
     // ── Revalidações de segurança (nunca confie só na UI) ────────────────
     if req.source == req.target {
         return Err("origem e destino são o mesmo dispositivo".into());
@@ -90,18 +132,15 @@ pub async fn start_clone(app: AppHandle, req: CloneRequest) -> Result<String, St
     if req.source_size == 0 {
         return Err("tamanho da origem inválido (0 bytes)".into());
     }
-    let disks = crate::disk::list_disks().await.unwrap_or_default();
-    if let Some(dst) = disks.iter().find(|d| d.path == req.target) {
-        if dst.is_system {
-            return Err("BLOQUEADO: o destino é o disco do sistema em execução".into());
-        }
-        if dst.size_bytes < req.source_size {
-            return Err(format!(
-                "destino ({:.1} GiB) menor que a origem ({:.1} GiB)",
-                dst.size_bytes as f64 / 2f64.powi(30),
-                req.source_size as f64 / 2f64.powi(30)
-            ));
-        }
+    // FAIL-CLOSED: sem enumeração confiável nada é escrito, e o destino tem
+    // de ser exatamente um dos discos enumerados (ver `guard`).
+    let disks = crate::disk::list_disks().await.map_err(|e| {
+        format!("BLOQUEADO: falha ao enumerar os discos para validar o destino: {e}")
+    })?;
+    let (_, dst) = crate::guard::check_clone(&disks, &req.source, &req.target, req.source_size)?;
+    // Quando o trabalho vai para o helper elevado, é ele quem desmonta.
+    if !crate::elevated::delegates_to_helper() {
+        crate::unmount::release_target(dst).await?;
     }
 
     let job_id = blake3::hash(
@@ -113,42 +152,61 @@ pub async fn start_clone(app: AppHandle, req: CloneRequest) -> Result<String, St
     let app2 = app.clone();
     let jid = job_id.clone();
     tokio::spawn(async move {
-        let result = execute_clone(&app2, &req).await;
-        let (status, verify_ok, hash) = match &result {
-            Ok(h) => ("ok", Some(req.verify), Some(h.clone())),
-            Err(e) => {
-                tracing::error!("clonagem falhou: {e}");
-                ("error", Some(false), None)
-            }
-        };
-        // Persistência no SQLite — histórico/auditoria
-        let state = app2.state::<crate::db::DbState>();
-        crate::db::record_job(
-            &state,
+        let _job = job; // liberada quando a tarefa termina
+        let row = crate::db::begin_job(
+            &app2.state::<crate::db::DbState>(),
             &req.source,
             &req.target,
-            result.as_ref().map(|_| req.source_size).unwrap_or(0),
-            hash.as_deref(),
-            verify_ok,
-            status,
         );
-        let done = result.is_ok();
-        let msg = match &result {
-            Ok(h) => Some(format!("verificação OK — BLAKE3 {h}")),
-            Err(e) => Some(e.clone()),
-        };
-        emit(
-            &app2,
-            &CloneProgress {
-                phase: if done { "done".into() } else { "error".into() },
-                bytes_done: if done { req.source_size } else { 0 },
-                total_bytes: req.source_size,
-                percent: if done { 100.0 } else { 0.0 },
-                speed_mbps: 0.0,
-                eta_seconds: 0.0,
-                message: msg,
-            },
-        );
+
+        let result = execute_clone(&app2, &req).await;
+        let state = app2.state::<crate::db::DbState>();
+        match &result {
+            Ok(hash) => {
+                // `verify_ok` só é verdadeiro se a verificação realmente rodou.
+                crate::db::finish_job(
+                    &state,
+                    row,
+                    &req.source,
+                    &req.target,
+                    req.source_size,
+                    Some(hash),
+                    req.verify.then_some(true),
+                    "ok",
+                );
+                let message = if req.verify {
+                    format!("verificação OK — BLAKE3 {hash}")
+                } else {
+                    format!("cópia concluída SEM verificação — BLAKE3 da origem {hash}")
+                };
+                emit(
+                    &app2,
+                    &CloneProgress {
+                        phase: "done".into(),
+                        bytes_done: req.source_size,
+                        total_bytes: req.source_size,
+                        percent: 100.0,
+                        speed_mbps: 0.0,
+                        eta_seconds: 0.0,
+                        message: Some(message),
+                    },
+                );
+            }
+            Err(e) => {
+                tracing::error!("clonagem não concluída: {e}");
+                crate::db::finish_job(
+                    &state,
+                    row,
+                    &req.source,
+                    &req.target,
+                    0,
+                    None,
+                    None,
+                    crate::job::failure_kind(e),
+                );
+                emit_failure(&app2, req.source_size, e, "o destino ficou incompleto");
+            }
+        }
     });
 
     Ok(jid)
@@ -161,21 +219,53 @@ pub async fn execute_clone(app: &AppHandle, req: &CloneRequest) -> Result<String
     if !crate::privilege::is_root() {
         tracing::info!("sem root — delegando clonagem ao helper via pkexec");
         let v = crate::privilege::run_elevated(app, serde_json::json!({"job": "clone", "request": req})).await?;
-        return Ok(v["hash"].as_str().unwrap_or_default().to_string());
+        // Sem hash não há como afirmar que a cópia terminou: nunca é sucesso.
+        return match v["hash"].as_str() {
+            Some(hash) if !hash.is_empty() => Ok(hash.to_string()),
+            _ => Err("o helper terminou sem informar o hash da cópia".into()),
+        };
     }
     run_clone(req, |p| emit(app, p)).await
 }
 
+/// Descarta do page cache o que já está no disco, para a releitura de
+/// verificação vir do dispositivo e não da memória. Só é necessário no
+/// Linux: no macOS `/dev/rdiskN` não passa por cache, e no Windows o acesso
+/// a `\\.\PhysicalDriveN` não usa o cache de arquivos.
+#[cfg(target_os = "linux")]
+pub(crate) fn drop_page_cache(file: &impl std::os::fd::AsRawFd) {
+    // SAFETY: chamada simples sobre um descritor válido; o retorno é só um
+    // conselho ao kernel e pode ser ignorado.
+    unsafe {
+        libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn drop_page_cache<T>(_file: &T) {}
+
 /// Núcleo da cópia raw. `on_progress` é chamado no máximo a cada 200 ms
 /// (além das mudanças de fase), desacoplando o motor do canal de eventos.
+/// Cancelável pelo token do processo (`job::global`).
 pub async fn run_clone<F>(req: &CloneRequest, on_progress: F) -> Result<String, String>
+where
+    F: Fn(&CloneProgress) + Send,
+{
+    run_clone_cancellable(req, &crate::job::global(), on_progress).await
+}
+
+pub async fn run_clone_cancellable<F>(
+    req: &CloneRequest,
+    cancel: &crate::job::CancelToken,
+    on_progress: F,
+) -> Result<String, String>
 where
     F: Fn(&CloneProgress) + Send,
 {
     let block = req
         .block_size
         .unwrap_or(DEFAULT_BLOCK_SIZE)
-        .max(1024 * 1024);
+        .clamp(MIN_BLOCK_SIZE, MAX_BLOCK_SIZE);
     let total = req.source_size;
 
     let mut src = tokio::fs::File::open(&req.source)
@@ -202,6 +292,7 @@ where
 
     // ── Fase 1: cópia raw bloco a bloco, hash on-the-fly ─────────────────
     loop {
+        cancel.check()?;
         let n = src
             .read(&mut buf)
             .await
@@ -223,6 +314,11 @@ where
 
     // ── Fase 2: flush — garante que os dados saíram do cache p/ o device ─
     on_progress(&CloneProgress::new("flushing", done, total, started, None));
+    // O `File` do tokio escreve em segundo plano: o erro da ÚLTIMA escrita só
+    // aparece no flush. Sem ele, um destino com falha podia passar por OK.
+    dst.flush()
+        .await
+        .map_err(|e| format!("escrita no destino @ offset {done}: {e}"))?;
     dst.sync_all()
         .await
         .map_err(|e| format!("fsync do destino: {e}"))?;
@@ -235,9 +331,13 @@ where
         let mut rd = tokio::fs::File::open(&req.target)
             .await
             .map_err(|e| format!("reabrir destino p/ verificação: {e}"))?;
+        drop_page_cache(&rd);
         let mut vh = blake3::Hasher::new();
         let mut vdone: u64 = 0;
+        // Cronômetro próprio: velocidade e ETA desta fase, não da cópia.
+        let vstarted = Instant::now();
         loop {
+            cancel.check()?;
             let n = rd
                 .read(&mut buf)
                 .await
@@ -250,7 +350,7 @@ where
             vh.update(&buf[..take]);
             vdone += take as u64;
             if last_emit.elapsed().as_millis() >= 200 {
-                on_progress(&CloneProgress::new("verifying", vdone, done, started, None));
+                on_progress(&CloneProgress::new("verifying", vdone, done, vstarted, None));
                 last_emit = Instant::now();
             }
         }
@@ -263,4 +363,57 @@ where
     }
 
     Ok(src_hash)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nada(_: &CloneProgress) {}
+
+    fn req(dir: &std::path::Path, verify: bool, block_size: Option<usize>) -> CloneRequest {
+        CloneRequest {
+            source: dir.join("src.bin").to_string_lossy().into_owned(),
+            target: dir.join("dst.bin").to_string_lossy().into_owned(),
+            source_size: 0,
+            block_size,
+            verify,
+        }
+    }
+
+    fn tmp(nome: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("cloneforge-clone-{}-{nome}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[tokio::test]
+    async fn clone_copia_verifica_e_limita_o_bloco() {
+        let dir = tmp("ok");
+        let dados: Vec<u8> = (0..2_500_000u32).map(|i| (i % 239) as u8).collect();
+        std::fs::write(dir.join("src.bin"), &dados).unwrap();
+        let token = crate::job::CancelToken::new();
+
+        // bloco absurdo vindo do cliente é limitado, não alocado
+        let hash = run_clone_cancellable(&req(&dir, true, Some(usize::MAX)), &token, nada)
+            .await
+            .unwrap();
+        assert_eq!(hash, blake3::hash(&dados).to_hex().to_string());
+        assert_eq!(std::fs::read(dir.join("dst.bin")).unwrap(), dados);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn clone_cancelado_para_antes_de_copiar() {
+        let dir = tmp("cancelado");
+        std::fs::write(dir.join("src.bin"), vec![1u8; 4096]).unwrap();
+        let token = crate::job::CancelToken::new();
+        token.cancel();
+        let err = run_clone_cancellable(&req(&dir, true, None), &token, nada)
+            .await
+            .unwrap_err();
+        assert_eq!(err, crate::job::CANCELLED);
+        assert_eq!(std::fs::metadata(dir.join("dst.bin")).unwrap().len(), 0);
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

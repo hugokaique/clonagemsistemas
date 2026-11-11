@@ -22,13 +22,12 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
-tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 blake3 = "1"
-zstd = "0.13"
+zstd = { version = "0.13", features = ["zstdmt"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 anyhow = "1"
@@ -39,8 +38,10 @@ tracing-subscriber = "0.3"
 [target.'cfg(target_os = "macos")'.dependencies]
 plist = "1"
 
-# Linux: elevação via pkexec (geteuid)
-[target.'cfg(target_os = "linux")'.dependencies]
+# Unix: elevação via pkexec no Linux (geteuid) e troca de identidade do
+# helper ao abrir arquivos do usuário (seteuid/initgroups) — o código é
+# `cfg(unix)` para também compilar e ser testado no macOS.
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 # Windows: Win32 raw — DeviceIoControl (FSCTL_GET_VOLUME_BITMAP), CreateFileW

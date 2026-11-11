@@ -79,6 +79,10 @@ Pré-requisito: 2 pendrives/SSDs USB (origem ≤ destino), nenhum deles do siste
 | 5.3 | Policy instalada | `/usr/share/polkit-1/actions/com.cloneforge.helper.policy` presente pós-instalação do .deb | ☐ |
 | 5.4 | Smart Copy ext4 via partclone | Modo 2 no header; imagem sparse-aware | ☐ |
 | 5.5 | Negar a senha no pkexec | Erro limpo na UI; nada gravado no destino | ☐ |
+| 5.6 | Restaurar a imagem do 5.4 (modo 2) | Stream entregue ao `partclone.restore`; filesystem montável no destino; done + hash conferido | ☐ |
+| 5.7 | Job direto no helper com destino = disco do sistema: `echo '{"job":"clone",…}' \| pkexec cloneforge-helper run` | `ok:false` com "BLOQUEADO"; nada gravado | ☐ |
+| 5.8 | Job direto no helper com arquivo como origem ou destino (`/etc/shadow`, `/etc/passwd`) | `ok:false` com "BLOQUEADO"; arquivos intactos | ☐ |
+| 5.9 | Criar imagem via helper numa pasta do usuário | `.cfimg` pertence ao usuário (não a root); pasta só de root → erro de permissão | ☐ |
 
 ## 6. macOS (Intel e Apple Silicon)
 
@@ -96,6 +100,23 @@ Pré-requisito: 2 pendrives/SSDs USB (origem ≤ destino), nenhum deles do siste
 | 7.1 | `cloneforge.db` em `%APPDATA%\com.cloneforge.app\` | Tabelas `clone_jobs`, `images`, `audit_log` (WAL) | ☐ |
 | 7.2 | Kill do app no meio da clonagem | Banco íntegro ao reabrir (WAL recovery); job ausente ou marcado erro | ☐ |
 | 7.3 | Catálogo de imagens | Re-criar imagem no mesmo path faz UPSERT (não duplica) | ☐ |
+
+## 8. Operação, cancelamento e interface
+
+| # | Teste | Esperado | Status |
+|---|-------|----------|--------|
+| 8.1 | Cancelar uma clonagem em andamento | Para em poucos segundos; painel "Cancelado" (âmbar); histórico `cancelado` | ☐ |
+| 8.2 | Cancelar a criação de uma imagem sobre um `.cfimg` existente | Arquivo `.partial` removido; imagem anterior intacta | ☐ (automatizado: ☑) |
+| 8.3 | Cancelar no Linux com a GUI sem root | Pedido chega ao helper pelo stdin; mesmo resultado do 8.1 | ☐ |
+| 8.4 | Iniciar uma segunda operação com outra em andamento | Erro "já existe uma operação em andamento"; a primeira segue | ☐ |
+| 8.5 | Fechar a janela durante uma operação | Fechamento barrado; aviso na interface | ☐ |
+| 8.6 | Matar o app no meio de uma clonagem e reabrir | Histórico mostra o job como `interrompido` | ☐ (automatizado: ☑) |
+| 8.7 | Restore com "verificar" marcado | Fase de verificação relê o destino; mensagem "verificado por releitura do destino" | ☐ |
+| 8.8 | Destino com volumes montados (macOS / Linux) | Volumes desmontados antes da escrita; se a desmontagem falhar, nada é gravado | ☐ |
+| 8.9 | Destino com volumes montados (Windows) | **Não implementado** (lock/dismount de volume) — registrar o comportamento observado | ☐ |
+| 8.10 | Modal de confirmação | Enter não confirma; botão só habilita após marcar a caixa; Esc cancela | ☐ |
+| 8.11 | CSP ativa | App abre e opera sem violações de CSP no console do WebView | ☐ |
+| 8.12 | Pacotes `.deb` e `.rpm` | Instalam `/usr/bin/cloneforge-helper` e a policy do Polkit | ☐ |
 
 ---
 

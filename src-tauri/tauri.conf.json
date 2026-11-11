@@ -20,7 +20,10 @@
         "resizable": true
       }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'",
+      "devCsp": "default-src 'self'; script-src 'self' 'unsafe-inline' http://localhost:1420; style-src 'self' 'unsafe-inline' http://localhost:1420; img-src 'self' data: blob: http://localhost:1420; font-src 'self' data: http://localhost:1420; connect-src 'self' ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1420; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'none'"
+    }
   },
   "bundle": {
     "active": true,
@@ -33,7 +36,7 @@
       "icons/icon.ico"
     ],
     "shortDescription": "Clonagem, backup e deploy de sistemas operacionais",
-    "longDescription": "CloneForge: motor multiplataforma de clonagem de disco (raw/smart copy), imagens ISO/WIM/IMG, verificação BLAKE3 e auditoria local.",
+    "longDescription": "CloneForge: motor multiplataforma de clonagem de disco (raw/smart copy), imagens comprimidas .cfimg (Zstandard) e .dmg no macOS, verificação BLAKE3 e auditoria local.",
     "category": "Utility",
     "windows": {
       "nsis": {
@@ -46,8 +49,22 @@
       }
     },
     "linux": {
-      "deb": { "depends": [] },
-      "rpm": { "depends": [] },
+      "deb": {
+        "depends": ["pkexec | policykit-1", "util-linux"],
+        "recommends": ["partclone"],
+        "files": {
+          "/usr/bin/cloneforge-helper": "target/release/cloneforge-helper",
+          "/usr/share/polkit-1/actions/com.cloneforge.helper.policy": "assets/com.cloneforge.helper.policy"
+        }
+      },
+      "rpm": {
+        "depends": ["polkit", "util-linux"],
+        "recommends": ["partclone"],
+        "files": {
+          "/usr/bin/cloneforge-helper": "target/release/cloneforge-helper",
+          "/usr/share/polkit-1/actions/com.cloneforge.helper.policy": "assets/com.cloneforge.helper.policy"
+        }
+      },
       "appimage": {}
     },
     "macOS": {

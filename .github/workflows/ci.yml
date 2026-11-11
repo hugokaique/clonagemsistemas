@@ -1,16 +1,34 @@
 name: CI
 
-# Verificações rápidas em todo push/PR: frontend compila, backend checa,
-# clippy sem warnings e testes headless do motor (file→file, sem root).
+# Verificações em todo push/PR, nos 3 SOs: frontend compila, backend checa,
+# clippy sem warnings, testes unitários e teste E2E headless do motor
+# (file→file, sem root). Linux e macOS têm código específico de plataforma
+# que antes só era compilado no release — agora é validado a cada PR.
 
 on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1" # segunda 06:17 UTC — auditoria semanal de dependências
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   check:
-    runs-on: windows-latest
+    # A auditoria semanal tem job próprio; o schedule não precisa rodar a matrix.
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-22.04, macos-latest]
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +44,15 @@ jobs:
         with:
           components: clippy
 
+      # ── Linux: dependências do WebKitGTK (necessárias para compilar o Tauri) ──
+      - name: Dependências de sistema (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+            librsvg2-dev build-essential pkg-config libssl-dev
+
       - name: Cache cargo
         uses: actions/cache@v4
         with:
@@ -36,6 +63,8 @@ jobs:
           key: ${{ runner.os }}-ci-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-ci-cargo-
 
+      # O frontend precisa vir ANTES de qualquer passo do cargo:
+      # tauri::generate_context! exige ../dist existente na compilação.
       - name: Frontend (tsc + vite)
         run: |
           npm ci
@@ -43,39 +72,80 @@ jobs:
 
       - name: Backend (cargo check, workspace inteiro)
         working-directory: src-tauri
-        run: cargo check --workspace
+        run: cargo check --workspace --locked
 
-      - name: Clippy (zero warnings)
+      - name: Clippy (zero warnings, inclui testes)
         working-directory: src-tauri
-        run: cargo clippy --workspace -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Testes unitários
+        working-directory: src-tauri
+        run: cargo test --workspace --locked
 
       # Teste funcional do motor sem hardware: clone file→file + restore de
       # imagem .cfimg, verificando hashes BLAKE3 (o helper não tem manifesto
-      # UAC, então roda não-elevado no runner).
+      # UAC, então roda não-elevado no runner). Falha se o helper sair com
+      # status != 0 ou se a última linha não trouxer "ok":true.
       - name: Teste E2E headless do motor
-        working-directory: src-tauri
-        shell: pwsh
+        shell: bash
         run: |
-          cargo build -p cloneforge-helper
-          New-Item -ItemType Directory -Force ..\testdata | Out-Null
-          python -c "
+          set -euo pipefail
+          (cd src-tauri && cargo build -p cloneforge-helper --locked)
+          HELPER=src-tauri/target/debug/cloneforge-helper
+          PY=$(command -v python3 || command -v python)
+
+          mkdir -p testdata
+          "$PY" - <<'PYEOF'
           import os
-          with open('../testdata/ci_src.bin','wb') as f:
-              f.write(os.urandom(16*1024*1024))
-              f.write(b'\x00' * (8*1024*1024))
-          print('massa criada:', os.path.getsize('../testdata/ci_src.bin'))
-          "
-          $size = (Get-Item ..\testdata\ci_src.bin).Length
-          $clone = '{"job":"clone","request":{"source":"testdata/ci_src.bin","target":"testdata/ci_dst.bin","sourceSize":' + $size + ',"blockSize":null,"verify":true}}'
-          Set-Location ..
-          $clone | src-tauri\target\debug\cloneforge-helper.exe run | Select-Object -Last 1
-          $img = '{"job":"create_image","request":{"source":"testdata/ci_src.bin","sourceSize":' + $size + ',"output":"testdata/ci.cfimg","level":3,"smart":false,"fs":null,"live":null}}'
-          $img | src-tauri\target\debug\cloneforge-helper.exe run | Select-Object -Last 1
-          $rst = '{"job":"restore","request":{"image":"testdata/ci.cfimg","target":"testdata/ci_restored.bin","verify":true}}'
-          $rst | src-tauri\target\debug\cloneforge-helper.exe run | Select-Object -Last 1
-          python -c "
-          a = open('testdata/ci_src.bin','rb').read()
-          assert a == open('testdata/ci_dst.bin','rb').read(), 'clone divergente'
-          assert a == open('testdata/ci_restored.bin','rb').read(), 'restore divergente'
+          with open('testdata/ci_src.bin', 'wb') as f:
+              f.write(os.urandom(16 * 1024 * 1024))
+              f.write(b'\x00' * (8 * 1024 * 1024))
+          print('massa criada:', os.path.getsize('testdata/ci_src.bin'))
+          PYEOF
+          SIZE=$("$PY" -c "import os; print(os.path.getsize('testdata/ci_src.bin'))")
+
+          # Roda um job: propaga falha do helper (set -e na substituição) e
+          # exige que a última linha seja o resultado com "ok":true.
+          run_job() {
+            local out last
+            out=$(printf '%s\n' "$1" | "$HELPER" run)
+            last=$(printf '%s\n' "$out" | tail -n 1)
+            echo "$last"
+            if ! printf '%s' "$last" | grep -Eq '"ok" *: *true'; then
+              echo "::error::job falhou (última linha sem \"ok\":true)"
+              exit 1
+            fi
+          }
+
+          run_job '{"job":"clone","request":{"source":"testdata/ci_src.bin","target":"testdata/ci_dst.bin","sourceSize":'"$SIZE"',"blockSize":null,"verify":true}}'
+          run_job '{"job":"create_image","request":{"source":"testdata/ci_src.bin","sourceSize":'"$SIZE"',"output":"testdata/ci.cfimg","level":3,"smart":false,"fs":null,"live":null}}'
+          run_job '{"job":"restore","request":{"image":"testdata/ci.cfimg","target":"testdata/ci_restored.bin","verify":true}}'
+
+          "$PY" - <<'PYEOF'
+          a = open('testdata/ci_src.bin', 'rb').read()
+          assert a == open('testdata/ci_dst.bin', 'rb').read(), 'clone divergente'
+          assert a == open('testdata/ci_restored.bin', 'rb').read(), 'restore divergente'
           print('E2E OK: clone e restore bit-identicos')
-          "
+          PYEOF
+
+  # Auditoria de dependências (RustSec). Advisories de crates de terceiros
+  # fogem do controle do projeto, então NÃO bloqueia PRs: roda no schedule,
+  # em push na main e manualmente, e mesmo assim com continue-on-error.
+  audit:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Instalar cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: cargo audit
+        working-directory: src-tauri
+        run: cargo audit

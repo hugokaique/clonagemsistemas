@@ -33,14 +33,15 @@ Alternativa moderna ao balenaEtcher, Rescuezilla e Macrium Reflect: clone discos
 - **Clonagem raw (bit a bit)** — disco → disco, disco → imagem, imagem → disco, com buffer otimizado para NVMe/SSD.
 - **Progresso em tempo real** — porcentagem, velocidade em MB/s e tempo estimado, emitidos como eventos para a UI.
 - **Verificação criptográfica** — hash **BLAKE3** calculado on-the-fly durante a cópia e revalidado após a escrita (`flushing → verifying → done`).
-- **Imagens `.cfimg`** — compressão **Zstandard** com o hash da origem gravado no container; restore com verificação automática.
+- **Imagens `.cfimg` (e `.dmg` no macOS)** — compressão **Zstandard** com o hash da origem gravado no container; restore com verificação automática.
 - **Histórico e auditoria local** — cada operação (sucesso, erro, hashes, duração) registrada em **SQLite** (modo WAL), consultável na aba Histórico.
+- **Smart Copy** — copia apenas blocos alocados (implementado; testes de aceitação em hardware pendentes).
 - **Multiplataforma nativo** — Windows, Linux e macOS (Universal Binary: Intel `x86_64` + Apple Silicon `arm64` em um único `.dmg`).
 
 ### Roteiro (roadmap)
 
-- [ ] Smart Copy (copiar apenas blocos alocados — NTFS via bitmap, ext4/XFS/Btrfs via `FIEMAP`/`partclone`)
-- [ ] Clonagem a quente do sistema em execução (Windows VSS; macOS `asr` com snapshots APFS)
+- [ ] Smart Copy (copiar apenas blocos alocados — NTFS/ReFS via bitmap no Windows, `partclone` no Linux, `hdiutil`/`asr` no macOS) — **implementado, aceitação pendente** (ver [`TESTES_ACEITACAO.md`](TESTES_ACEITACAO.md))
+- [ ] Clonagem a quente do sistema em execução (Windows VSS) — **implementado, aceitação pendente**; macOS com snapshots APFS ainda não implementado
 - [ ] Suporte a imagens de terceiros (`.iso`, `.img`, `.wim` via WIMGAPI/DISM)
 - [ ] Deploy em lote (uma imagem → N destinos)
 - [ ] Assinatura de código: Authenticode (Windows) e Developer ID + notarização (macOS)
@@ -58,7 +59,8 @@ Alternativa moderna ao balenaEtcher, Rescuezilla e Macrium Reflect: clone discos
 ┌───────────────────────▼─────────────────────────────────┐
 │  Core — Rust + Tokio (assíncrono, I/O em blocos)        │
 │  disk.rs · clone.rs · image.rs · smart.rs · db.rs       │
-│  vss.rs (Windows) · privilege.rs (elevação por SO)      │
+│  vss.rs (Windows) · privilege.rs/elevated.rs (Linux)    │
+│  guard.rs (proteção do disco do sistema)                │
 └───────┬─────────────────────────────┬───────────────────┘
         │ app (UAC/raiz total)        │ helper (crate separado,
         │ operações em disco          │ protocolo JSON-lines,
@@ -82,8 +84,8 @@ Alternativa moderna ao balenaEtcher, Rescuezilla e Macrium Reflect: clone discos
 | SO | Acesso a disco | Elevação | Particularidades |
 |---|---|---|---|
 | **Windows** | `\\.\PhysicalDriveX` | Manifesto `requireAdministrator` (UAC na abertura) | VSS para snapshots; NTFS/ReFS/FAT32 |
-| **Linux** | `/dev/sdX`, `/dev/nvmeXn1` | Polkit (`pkexec`) por operação | GPT/MBR (`sfdisk`), ext4/XFS/Btrfs/LVM |
-| **macOS** | `/dev/rdiskX` (raw) | `osascript` with administrator privileges | Containers APFS; boot Intel (EFI) vs Apple Silicon (iBoot, volumes selados); `asr` |
+| **Linux** | `/dev/sdX`, `/dev/nvmeXn1` | Polkit (`pkexec`) por operação | Enumeração via `lsblk`/`findmnt`; Smart Copy via `partclone` |
+| **macOS** | `/dev/rdiskX` (raw) | **Sem elevação automática** — o app não se eleva (não há `osascript`); acesso a `/dev/rdiskX` exige executar como root (ex.: `sudo`) | Containers APFS; imagem Smart Copy `.dmg` via `hdiutil`, restore via `asr` |
 
 ---
 
@@ -122,7 +124,7 @@ npm run tauri build -- --target universal-apple-darwin --bundles app,dmg  # macO
 
 ### Testes headless do motor (sem GUI)
 
-O binário `cloneforge-helper` fala JSON-lines em stdin/stdout — permite testar o motor em CI ou via shell:
+O binário `cloneforge-helper` fala JSON-lines em stdin/stdout — permite testar o motor em CI ou via shell. Sem privilégio ele aceita arquivos comuns como origem e destino; rodando como root (via `pkexec`), só aceita discos e partições da própria enumeração, recusa o disco do sistema como destino e abre os arquivos de imagem com a identidade do usuário que o chamou:
 
 ```bash
 echo '{"job":"clone","request":{"source":"origem.bin","target":"destino.bin","sourceSize":52181648,"blockSize":null,"verify":true}}' \
@@ -131,8 +133,8 @@ echo '{"job":"clone","request":{"source":"origem.bin","target":"destino.bin","so
 
 ### CI/CD
 
-- **CI** (`ci.yml`): lint + build em push para `main` (clippy com `-D warnings`).
-- **Release** (`release.yml`): tag `v*` → build em matrix (Windows / Ubuntu 22.04 / macOS) e publicação direta dos 7 artefatos no GitHub Release. Repositório público = minutos de Actions ilimitados.
+- **CI** (`ci.yml`): em push para `main` e PRs, nos 3 SOs — build do frontend, `cargo check`, clippy com `-D warnings`, `cargo test` e E2E headless; auditoria semanal de dependências (`cargo audit`).
+- **Release** (`release.yml`): tag `v*` (deve bater com a versão dos manifestos) → build em matrix (Windows / Ubuntu 22.04 / macOS) e criação de um **release em rascunho** com os artefatos e `SHA256SUMS.txt`. Repositório público = minutos de Actions ilimitados.
 
 ### Assinatura do macOS
 
