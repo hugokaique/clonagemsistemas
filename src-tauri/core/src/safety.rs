@@ -110,12 +110,9 @@ pub fn resolve_source(source: &str, disks: &[DiskInfo]) -> Result<ResolvedSource
 /// Checagens cruzadas origem × destino (mesmo disco, capacidade, origem
 /// armazenada no próprio destino).
 pub fn check_pair(source: &ResolvedSource, target: &ResolvedTarget) -> Result<(), String> {
-    let same = if cfg!(windows) {
-        source.path.eq_ignore_ascii_case(&target.path)
-    } else {
-        source.path == target.path
-    };
-    if same {
+    // Identidade, não texto: um destino que chega à origem por symlink,
+    // junction ou hard link truncaria o arquivo que está sendo lido.
+    if io::same_file(&source.path, &target.path) {
         return Err("origem e destino são o mesmo dispositivo/arquivo".into());
     }
     if let (Some(a), Some(b)) = (&source.disk_id, &target.disk_id) {

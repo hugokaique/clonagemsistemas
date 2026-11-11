@@ -323,12 +323,10 @@ pub fn plan_create_with(
         Some(dir) if dir.as_os_str().is_empty() || dir.is_dir() => {}
         _ => return Err(format!("a pasta de destino de `{output}` não existe")),
     }
-    let same = if cfg!(windows) {
-        output.eq_ignore_ascii_case(&source.path)
-    } else {
-        output == source.path
-    };
-    if same {
+    // Por identidade, não por texto: no macOS a mesma pasta temporária é
+    // `/var/…` e `/private/var/…`; um symlink/junction faria o mesmo. A saída
+    // é renomeada por cima do destino ao final — se fosse a origem, ela se perderia.
+    if io::same_file(&output, &source.path) {
         return Err("a saída não pode ser o próprio arquivo de origem".into());
     }
 
@@ -616,12 +614,7 @@ pub fn plan_restore_with(
     let target = safety::resolve_target(&req.target, disks)?;
     // Trava de segurança: a imagem não pode estar no disco que será apagado.
     safety::check_file_not_on_target(&image, PathKind::File, &target)?;
-    let same = if cfg!(windows) {
-        image.eq_ignore_ascii_case(&target.path)
-    } else {
-        image == target.path
-    };
-    if same {
+    if target.kind == PathKind::File && io::same_file(&image, &target.path) {
         return Err("imagem e destino são o mesmo arquivo".into());
     }
 

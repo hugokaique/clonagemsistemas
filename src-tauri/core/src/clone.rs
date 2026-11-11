@@ -308,6 +308,40 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn clone_recusa_destino_que_e_a_origem_por_outro_caminho() {
+        let dir = TempDir::new("clone-alias");
+        let real = dir.0.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let src = real.join("a.bin");
+        std::fs::write(&src, b"conteudo original").unwrap();
+
+        // `alias` é outra entrada de diretório que leva à mesma pasta.
+        let alias = dir.0.join("alias");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real, &alias).unwrap();
+        #[cfg(windows)]
+        {
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&alias)
+                .arg(&real)
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if !made {
+                eprintln!("não foi possível criar a junction — teste ignorado");
+                return;
+            }
+        }
+
+        let via_alias = alias.join("a.bin").to_string_lossy().into_owned();
+        let req = request(&src.to_string_lossy(), &via_alias, true);
+        let err = plan_clone_with(&req, &[]).unwrap_err();
+        assert!(err.contains("mesmo"), "{err}");
+        assert_eq!(std::fs::read(&src).unwrap(), b"conteudo original");
+    }
+
+    #[test]
     fn clone_tamanho_informado_pela_ui_e_ignorado() {
         // sourceSize errado (menor) fazia o progresso passar de 100%; agora o
         // backend usa o tamanho real.

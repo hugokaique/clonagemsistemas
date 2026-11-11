@@ -177,6 +177,38 @@ pub fn absolute(path: &str, base: Option<&std::path::Path>) -> String {
     }
 }
 
+/// Os dois caminhos apontam para o MESMO arquivo? Comparar só o texto não
+/// basta: `/var/…` e `/private/var/…` (macOS), um symlink, uma junction ou um
+/// hard link levam ao mesmo arquivo com grafias diferentes — e gravar a saída
+/// "em outro caminho" destruiria a origem.
+pub fn same_file(a: &str, b: &str) -> bool {
+    let text_eq = |x: &str, y: &str| {
+        if cfg!(windows) {
+            x.eq_ignore_ascii_case(y)
+        } else {
+            x == y
+        }
+    };
+    if text_eq(a, b) {
+        return true;
+    }
+    // Só dá para comparar identidades se os dois já existirem.
+    let (Ok(ca), Ok(cb)) = (std::fs::canonicalize(a), std::fs::canonicalize(b)) else {
+        return false;
+    };
+    if text_eq(&ca.to_string_lossy(), &cb.to_string_lossy()) {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(ma), Ok(mb)) = (std::fs::metadata(&ca), std::fs::metadata(&cb)) {
+            return ma.dev() == mb.dev() && ma.ino() == mb.ino();
+        }
+    }
+    false
+}
+
 /// Linux: descarta o page cache do dispositivo para que a verificação releia
 /// a mídia de verdade (sem isso o kernel devolveria os blocos recém-gravados
 /// da memória e um erro de gravação passaria despercebido).
@@ -224,6 +256,38 @@ mod tests {
         ] {
             assert_eq!(windows_path_kind(file), File, "{file}");
         }
+    }
+
+    #[test]
+    fn mesmo_arquivo_por_caminhos_diferentes() {
+        let dir = std::env::temp_dir().join(format!("cloneforge-same-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let a = dir.join("a.bin");
+        let b = dir.join("b.bin");
+        std::fs::write(&a, b"a").unwrap();
+        std::fs::write(&b, b"b").unwrap();
+        let s = |p: &std::path::Path| p.to_string_lossy().into_owned();
+
+        assert!(same_file(&s(&a), &s(&a)));
+        assert!(!same_file(&s(&a), &s(&b)));
+        // Mesmo arquivo com outra grafia (`sub/..`): o texto difere, a identidade não.
+        assert!(same_file(&s(&a), &s(&dir.join("sub").join("..").join("a.bin"))));
+        // Caminho como digitado × caminho canônico (no macOS /var → /private/var).
+        let canonical = std::fs::canonicalize(&a).unwrap();
+        assert!(same_file(&s(&a), &s(&canonical)));
+        // Um dos dois ainda não existe: não há identidade para comparar.
+        assert!(!same_file(&s(&a), &s(&dir.join("novo.bin"))));
+
+        #[cfg(unix)]
+        {
+            // Symlink e hard link apontam para o mesmo arquivo.
+            std::os::unix::fs::symlink(&a, dir.join("link.bin")).unwrap();
+            assert!(same_file(&s(&a), &s(&dir.join("link.bin"))));
+            std::fs::hard_link(&a, dir.join("hard.bin")).unwrap();
+            assert!(same_file(&s(&a), &s(&dir.join("hard.bin"))));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
