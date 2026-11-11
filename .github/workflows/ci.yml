@@ -100,9 +100,12 @@ jobs:
 
       - name: Dependências de sistema (Linux)
         if: runner.os == 'Linux'
+        # Sem limite, uma falha de DNS nos espelhos do Ubuntu deixa o apt
+        # tentando por mais de uma hora antes de falhar o job.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 \
             libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev \
             libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
             build-essential curl wget file pkg-config libssl-dev
@@ -147,9 +150,12 @@ jobs:
           restore-keys: ${{ runner.os }}-pkg-cargo-
 
       - name: Dependências de sistema
+        # Sem limite, uma falha de DNS nos espelhos do Ubuntu deixa o apt
+        # tentando por mais de uma hora antes de falhar o job.
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y -o Acquire::Retries=3 \
             libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev \
             libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev \
             build-essential curl wget file pkg-config libssl-dev
