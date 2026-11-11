@@ -1,0 +1,44 @@
+[package]
+name = "cloneforge-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77.2"
+description = "Motor do CloneForge: enumeração de discos, validação de segurança, clonagem e imagens — sem dependência de GUI"
+
+# Este crate NÃO depende do Tauri de propósito:
+# - o helper privilegiado (root via pkexec) linka só o motor, não a pilha de GUI;
+# - todo o código específico de SO vive aqui e pode ser verificado por
+#   compilação cruzada (Linux/macOS) sem WebKitGTK nem SDK da Apple.
+
+[lib]
+name = "cloneforge_core"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "time", "rt", "io-util", "macros"] }
+blake3 = "1"
+# zstdmt: compressão multi-thread (o gargalo da criação de imagem é a CPU)
+zstd = { version = "0.13", features = ["zstdmt"] }
+tracing = "0.1"
+# Parser do `diskutil -plist` (macOS). Fica em todos os SOs de propósito: assim
+# o parser é compilado e testado no CI de qualquer plataforma, não só no Mac.
+plist = "1"
+
+# Unix: geteuid (pkexec), posix_fadvise (descarta cache antes de verificar)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# Windows: Win32 raw — DeviceIoControl (bitmap de volume, lock/dismount), energia
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_Power",
+    "Win32_Security",
+] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread"] }

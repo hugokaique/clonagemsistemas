@@ -12,7 +12,7 @@ need() {
 }
 
 info "=== 1/4 Toolchain ==="
-need node   "Instale o Node.js LTS (>= 18): https://nodejs.org"
+need node   "Instale o Node.js 22+: https://nodejs.org"
 need npm    "O npm acompanha o Node.js."
 need cargo  "Instale o Rust via rustup: https://rustup.rs"
 need rustup "Instale o Rust via rustup: https://rustup.rs"
@@ -26,19 +26,20 @@ if [ "$OS" = "Linux" ]; then
     sudo apt-get install -y build-essential curl wget file pkg-config \
       libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev \
       libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev \
-      util-linux partclone sfdisk
+      util-linux fdisk partclone
   elif command -v dnf >/dev/null 2>&1; then
     sudo dnf install -y gcc gcc-c++ make curl wget file pkgconf-pkg-config \
       webkit2gtk4.1-devel javascriptcoregtk4.1-devel libsoup3-devel \
       gtk3-devel libappindicator-gtk3-devel librsvg2-devel openssl-devel \
-      util-linux partclone
+      util-linux partclone polkit
   elif command -v pacman >/dev/null 2>&1; then
     sudo pacman -S --needed --noconfirm base-devel curl wget file pkgconf \
-      webkit2gtk-4.1 gtk3 libappindicator-gtk3 librsvg openssl partclone
+      webkit2gtk-4.1 gtk3 libappindicator-gtk3 librsvg openssl partclone polkit
   else
     warn "Gerenciador de pacotes não reconhecido — instale manualmente: webkit2gtk-4.1, gtk3, libsoup-3.0, openssl, partclone"
   fi
-  # Polkit: instale a policy do app em /usr/share/polkit-1/actions/ no empacotamento
+  # Polkit: os pacotes .deb/.rpm já instalam o helper em /usr/bin e a policy em
+  # /usr/share/polkit-1/actions/ (ver src-tauri/tauri.linux.conf.json).
 fi
 
 if [ "$OS" = "Darwin" ]; then
@@ -63,7 +64,9 @@ fi
 info "=== 4/4 Pronto ==="
 cat <<'EOF'
 
-  Desenvolvimento : npm run tauri dev        (Linux: via pkexec/sudo p/ acesso raw)
+  Desenvolvimento : npm run tauri dev        (Linux: as operações pedem senha via pkexec)
+  Só a interface  : npm run dev              (navegador, backend simulado)
+  Testes do motor : (cd src-tauri && cargo test --workspace)
 
   Build Linux     : npm run tauri build -- --bundles deb,rpm,appimage
   Build macOS     : npm run tauri build -- --target universal-apple-darwin --bundles app,dmg

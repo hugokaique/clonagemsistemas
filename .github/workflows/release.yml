@@ -72,6 +72,16 @@ jobs:
         if: runner.os != 'macOS'
         run: npm run tauri build -- --bundles ${{ matrix.bundles }}
 
+      # Sem o helper e a policy do Polkit o app instalado não consegue
+      # executar nenhuma operação de disco no Linux.
+      - name: Conferir helper e policy no .deb (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          deb=$(ls src-tauri/target/release/bundle/deb/*.deb)
+          dpkg -c "$deb" > contents.txt
+          grep 'usr/bin/cloneforge-helper$' contents.txt
+          grep 'usr/share/polkit-1/actions/com.cloneforge.helper.policy$' contents.txt
+
       - name: Build (macOS Universal Binary)
         if: runner.os == 'macOS'
         # Sem certificado Developer ID: build ad-hoc (não definir APPLE_*,
