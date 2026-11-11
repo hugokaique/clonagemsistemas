@@ -1,0 +1,77 @@
+name: Relatar um erro
+description: Informe um comportamento incorreto do CloneForge
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado por relatar o problema. Antes de continuar, leia com atenção:
+
+        - **Não cole números de série de discos, nomes de usuário, caminhos com dados pessoais nem qualquer outro dado pessoal.** Substitua essas informações por marcadores, como `[REMOVIDO]`.
+        - **Não relate problemas de segurança aqui.** Vulnerabilidades devem ser reportadas de forma privada, conforme descrito em [SECURITY.md](../../SECURITY.md).
+
+  - type: input
+    id: sistema-operacional
+    attributes:
+      label: Sistema operacional e versão
+      description: Por exemplo, Windows 11 23H2, macOS 14.5 ou Ubuntu 24.04.
+      placeholder: Windows 11 23H2
+    validations:
+      required: true
+
+  - type: input
+    id: versao-cloneforge
+    attributes:
+      label: Versão do CloneForge
+      description: Informe a versão exibida no aplicativo ou o nome do instalador utilizado.
+      placeholder: v1.0.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: operacao
+    attributes:
+      label: Operação
+      description: Qual operação estava sendo executada quando o problema ocorreu?
+      options:
+        - Clonar disco
+        - Criar imagem
+        - Restaurar imagem
+        - Listagem de discos
+        - Outro
+    validations:
+      required: false
+
+  - type: textarea
+    id: o-que-aconteceu
+    attributes:
+      label: O que aconteceu e o que você esperava
+      description: Descreva o comportamento observado e o comportamento que você esperava.
+      placeholder: |
+        Observado: ...
+        Esperado: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: passos
+    attributes:
+      label: Passos para reproduzir
+      description: Liste, em ordem, as ações necessárias para reproduzir o problema.
+      placeholder: |
+        1. Abrir o CloneForge
+        2. Selecionar ...
+        3. Clicar em ...
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Mensagem de erro e logs
+      description: Cole a mensagem de erro e os logs relevantes. Remova números de série e dados pessoais antes de colar.
+      render: shell
+    validations:
+      required: false

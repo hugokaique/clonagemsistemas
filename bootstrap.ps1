@@ -35,6 +35,9 @@ if (-not ($vsPaths | Where-Object { Test-Path $_ })) {
 
 Write-Host "`n=== 2/4 Dependências do frontend ===" -ForegroundColor Cyan
 npm install
+if ($LASTEXITCODE -ne 0) {
+  throw "[ERRO] 'npm install' falhou (código $LASTEXITCODE)."
+}
 
 Write-Host "`n=== 3/4 Ícones ===" -ForegroundColor Cyan
 if (Test-Path "src-tauri\icons\icon.ico") {

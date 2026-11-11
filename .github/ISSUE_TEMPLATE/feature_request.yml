@@ -1,0 +1,35 @@
+name: Sugerir uma funcionalidade
+description: Proponha uma melhoria ou nova funcionalidade para o CloneForge
+title: "[Sugestão]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Obrigado pela sugestão. Não inclua dados pessoais nem números de série de discos. Problemas de segurança devem ser reportados de forma privada, conforme descrito em [SECURITY.md](../../SECURITY.md).
+
+  - type: textarea
+    id: problema
+    attributes:
+      label: Problema a ser resolvido
+      description: Descreva a necessidade ou a dificuldade que você enfrenta. Foque no problema, não apenas na solução.
+      placeholder: Hoje não consigo ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solucao
+    attributes:
+      label: Solução proposta
+      description: Descreva como você imagina que a funcionalidade deveria funcionar.
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternativas
+    attributes:
+      label: Alternativas consideradas
+      description: Descreva outras formas de resolver o problema que você avaliou.
+    validations:
+      required: false

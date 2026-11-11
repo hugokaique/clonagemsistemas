@@ -26,7 +26,7 @@ if [ "$OS" = "Linux" ]; then
     sudo apt-get install -y build-essential curl wget file pkg-config \
       libwebkit2gtk-4.1-dev libjavascriptcoregtk-4.1-dev libsoup-3.0-dev \
       libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev \
-      util-linux partclone sfdisk
+      util-linux partclone
   elif command -v dnf >/dev/null 2>&1; then
     sudo dnf install -y gcc gcc-c++ make curl wget file pkgconf-pkg-config \
       webkit2gtk4.1-devel javascriptcoregtk4.1-devel libsoup3-devel \
@@ -38,6 +38,7 @@ if [ "$OS" = "Linux" ]; then
   else
     warn "Gerenciador de pacotes não reconhecido — instale manualmente: webkit2gtk-4.1, gtk3, libsoup-3.0, openssl, partclone"
   fi
+  # sfdisk/lsblk/findmnt vêm no pacote util-linux (não existe pacote 'sfdisk').
   # Polkit: instale a policy do app em /usr/share/polkit-1/actions/ no empacotamento
 fi
 
